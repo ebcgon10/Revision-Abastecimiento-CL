@@ -151,6 +151,15 @@ def leer_modelo(contenido: bytes) -> dict:
         x = x[x["CODIGO SAP"] != ""]
         x["HOJA"] = h
         filas.append(x)
+    # plantilla de la hoja de traslado CD - CL (GRUPO, ORIGEN, DESTINO tal como los usa el modelo)
+    plantilla = {"GRUPO": 1, "ORIGEN": "COQUIMEXT", "DESTINO": "COQUIMBO"}
+    if "CD - CL" in hojas:
+        t = pd.read_excel(xls, hojas["CD - CL"], header=None, dtype=str, nrows=3)
+        if len(t) and str(t.iat[0, 0]).strip().upper() == "GRUPO":
+            t = t.iloc[1:]
+        if len(t) and t.shape[1] >= 3 and str(t.iat[0, 1]) not in ("nan", ""):
+            plantilla = {"GRUPO": int(_num(t.iloc[:1, 0]).iat[0]) or 1,
+                         "ORIGEN": str(t.iat[0, 1]).strip(), "DESTINO": str(t.iat[0, 2]).strip()}
     if not filas:
         raise ValueError("No encontré líneas en las hojas MASIVO GM / MASIVO CVP.")
     mas = pd.concat(filas, ignore_index=True)
@@ -158,7 +167,7 @@ def leer_modelo(contenido: bytes) -> dict:
     mas["PALLETS"] = _num(mas["PALLETS"]).astype(int)
     mas["GRUPO"] = _num(mas["GRUPO"]).astype(int)
     mas["FECHA"] = _cod(mas["FECHA"])
-    return {"modelo": m, "masivo": mas}
+    return {"modelo": m, "masivo": mas, "plantilla_cd_cl": plantilla}
 
 
 # ------------------------------------------------------------------ venta real
@@ -349,6 +358,38 @@ def resumen(mas: pd.DataFrame, cruce: pd.DataFrame) -> dict:
     return r
 
 
+# ------------------------------------------------------------------ sobra en CD -> CL
+def sobra_cd(cruce: pd.DataFrame, p: dict) -> pd.DataFrame:
+    """Productos con stock de más en el CD, de mayor a menor pallets sobrantes."""
+    s = cruce[cruce["accion"] == "SOBRA EN CD"].copy()
+    s["pallets_en_cd"] = s["stock_cd"] / s["cajas_x_pallet"]
+    s["pallets_a_dejar"] = np.ceil(s["demanda_dia"] * p["dias_objetivo"] / s["cajas_x_pallet"])
+    s["cajas_a_enviar"] = s["pallets_sobrantes"] * s["cajas_x_pallet"]
+    s["dias_que_quedan"] = np.where(
+        s["demanda_dia"] > 0, (s["stock_cd"] - s["cajas_a_enviar"]) / s["demanda_dia"], 999)
+    s["observacion"] = np.select(
+        [s["demanda_dia"] <= 0, s["pallets_en_masivo"] > 0],
+        ["Sin venta en el período: enviar completo salvo que sea estacional",
+         "Ojo: además viene en el masivo de hoy"], "")
+    return s.sort_values(["pallets_sobrantes", "cobertura_dias"], ascending=[False, False]).reset_index(drop=True)
+
+
+def traslado_cd_cl(sobra: pd.DataFrame, plantilla: dict, fecha: str) -> pd.DataFrame:
+    """Sobra en formato de la hoja CD - CL del modelo, listo para cargar."""
+    return pd.DataFrame({
+        "GRUPO": plantilla["GRUPO"], "ORIGEN": plantilla["ORIGEN"], "DESTINO": plantilla["DESTINO"],
+        "FECHA": fecha, "CODIGO SAP": sobra["sap"].values,
+        "CANTIDAD CAJAS": sobra["cajas_a_enviar"].round(0).values,
+        "PALLETS": sobra["pallets_sobrantes"].astype(int).values,
+        "PASILLO ACTUAL": sobra["pasillo"].values,
+    })
+
+
+COLS_VISTA_SOBRA = ["sap", "descripcion", "pasillo", "cajas_x_pallet", "stock_cd", "pallets_en_cd",
+                    "demanda_dia", "forecast_dia", "cobertura_dias", "pallets_a_dejar", "pallets_sobrantes",
+                    "cajas_a_enviar", "dias_que_quedan", "stock_cl", "pallets_exceso_modelo", "observacion"]
+
+
 # ------------------------------------------------------------------ salidas
 def masivo_listo(mas: pd.DataFrame, cruce: pd.DataFrame, fecha: str) -> pd.DataFrame:
     """Masivo con el mismo formato del modelo, solo con los pallets sugeridos, en orden de prioridad,
@@ -390,6 +431,9 @@ NOMBRES = {
     "prioridad": "PRIORIDAD", "motivo": "MOTIVO", "pallets_en_masivo": "PALLETS EN MASIVO",
     "pallets_sobrantes": "PALLETS SOBRANTES", "pallets_a_agregar": "PALLETS A AGREGAR",
     "pallets_exceso_modelo": "EXCESO SEGUN MODELO (PALLETS)", "accion": "ACCION",
+    "pallets_en_cd": "PALLETS EN CD", "pallets_a_dejar": "PALLETS A DEJAR (DIAS OBJETIVO)",
+    "cajas_a_enviar": "CAJAS A ENVIAR", "dias_que_quedan": "DIAS QUE QUEDAN EN CD",
+    "observacion": "OBSERVACION",
 }
 COLS_VISTA_MASIVO = ["prioridad", "HOJA", "CODIGO SAP", "descripcion", "pasillo", "PALLETS",
                      "pallets_sugeridos", "pallets_no_viajan", "stock_cd", "demanda_dia",
@@ -405,7 +449,7 @@ def vista(df: pd.DataFrame, cols: list[str]) -> pd.DataFrame:
     return df[[c for c in cols if c in df.columns]].rename(columns=NOMBRES)
 
 
-def a_excel(listo, mas, cruce, res, info, p) -> bytes:
+def a_excel(listo, mas, cruce, res, info, p, sobra=None, traslado=None) -> bytes:
     """Excel con el masivo priorizado listo para cargar, el detalle y el cruce completo."""
     from openpyxl.styles import Alignment, Font, PatternFill
     from openpyxl.utils import get_column_letter
@@ -421,6 +465,9 @@ def a_excel(listo, mas, cruce, res, info, p) -> bytes:
         "DETALLE MASIVO": vista(mas, COLS_VISTA_MASIVO),
         "CRUCE COMPLETO": vista(cruce[cruce["accion"] != "-"], COLS_VISTA_CRUCE),
     }
+    if sobra is not None:
+        hojas["SOBRA EN CD"] = vista(sobra, COLS_VISTA_SOBRA)
+        hojas["TRASLADO CD - CL"] = traslado
     rp = res["por_prioridad"].reset_index().rename(columns={
         "prioridad": "PRIORIDAD", "lineas": "LINEAS", "pallets_masivo": "PALLETS MASIVO",
         "pallets_sugeridos": "PALLETS SUGERIDOS"})
@@ -443,7 +490,7 @@ def a_excel(listo, mas, cruce, res, info, p) -> bytes:
         for i, (k, v) in enumerate(filas, 1):
             ws.cell(i, 1, k).font = Font(name="Arial", bold=True, size=13 if i == 1 else 10)
             ws.cell(i, 2, v).font = Font(name="Arial")
-        w.book.move_sheet("RESUMEN", offset=-3)
+        w.book.move_sheet("RESUMEN", offset=-(len(hojas)))
         for ws in w.book.worksheets:
             hdr_row = 10 if ws.title == "RESUMEN" else 1
             for c in ws[hdr_row]:
@@ -473,6 +520,45 @@ def a_excel(listo, mas, cruce, res, info, p) -> bytes:
                     ws.column_dimensions[c.column_letter].width = 36
                 if c.value in ("MOTIVO", "ACCION", "PRIORIDAD", "HOJA ORIGEN"):
                     ws.column_dimensions[c.column_letter].width = 26
+                if c.value == "OBSERVACION":
+                    ws.column_dimensions[c.column_letter].width = 50
+    return salida.getvalue()
+
+
+def a_excel_sobra(sobra, traslado, info, p) -> bytes:
+    """Excel solo con la sobra del CD (ordenada) y la hoja de traslado CD - CL."""
+    from openpyxl.styles import Alignment, Font, PatternFill
+    from openpyxl.utils import get_column_letter
+    salida = io.BytesIO()
+    with pd.ExcelWriter(salida, engine="openpyxl") as w:
+        vista(sobra, COLS_VISTA_SOBRA).to_excel(w, sheet_name="SOBRA EN CD", index=False, startrow=2)
+        traslado.to_excel(w, sheet_name="TRASLADO CD - CL", index=False)
+        ws = w.book["SOBRA EN CD"]
+        ws["A1"] = (f"Sobra en CD sobre {p['umbral_exceso']:g} días de cobertura · deja {p['dias_objetivo']} días "
+                    f"venta · venta {info['desde']:%d-%m-%Y} a {info['hasta']:%d-%m-%Y} · "
+                    f"{int(sobra['pallets_sobrantes'].sum())} pallets en {len(sobra)} SKU")
+        ws["A1"].font = Font(name="Arial", bold=True, size=12)
+        for hoja, fila in (("SOBRA EN CD", 3), ("TRASLADO CD - CL", 1)):
+            ws = w.book[hoja]
+            for c in ws[fila]:
+                c.font = Font(name="Arial", bold=True, color="FFFFFF")
+                c.fill = PatternFill("solid", fgColor="205C40")
+                c.alignment = Alignment(wrap_text=True, horizontal="center", vertical="center")
+            ws.row_dimensions[fila].height = 32
+            for col in range(1, ws.max_column + 1):
+                ws.column_dimensions[get_column_letter(col)].width = 13
+            for c in ws[fila]:
+                if c.value == "DESCRIPCION":
+                    ws.column_dimensions[c.column_letter].width = 36
+                if c.value == "OBSERVACION":
+                    ws.column_dimensions[c.column_letter].width = 50
+            ws.freeze_panes = ws.cell(fila + 1, 3)
+            ws.auto_filter.ref = f"A{fila}:{get_column_letter(ws.max_column)}{ws.max_row}"
+            for r in ws.iter_rows(min_row=fila + 1):
+                for c in r:
+                    c.font = Font(name="Arial")
+                    if isinstance(c.value, float):
+                        c.number_format = "#,##0.0"
     return salida.getvalue()
 
 
@@ -486,5 +572,9 @@ def procesar(modelo_bytes: bytes, ventas: list[tuple[str, bytes]], p: dict | Non
     res = resumen(mas, cru)
     fecha = str(m["masivo"]["FECHA"].iloc[0]) if len(m["masivo"]) else ""
     listo = masivo_listo(mas, cru, fecha)
+    sob = sobra_cd(cru, p)
+    tras = traslado_cd_cl(sob, m["plantilla_cd_cl"], fecha)
     return {"masivo": mas, "cruce": cru, "resumen": res, "info": info, "listo": listo, "params": p,
-            "excel": a_excel(listo, mas, cru, res, info, p)}
+            "sobra": sob, "traslado": tras,
+            "excel": a_excel(listo, mas, cru, res, info, p, sob, tras),
+            "excel_sobra": a_excel_sobra(sob, tras, info, p)}

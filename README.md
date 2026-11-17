@@ -31,6 +31,9 @@ reporte stock 7 hrs.
   - `SOBRA EN CD`: cobertura sobre 15 días; muestra cuántos pallets están de más (candidatos a
     devolver o a no reponer para liberar strech).
   - `QUIEBRE (sin pallet en CL)`, `BAJO (viene en masivo)`, `VENDE Y NO ESTÁ EN EL MODELO`, `OK`.
+- **Sobra en CD → enviar a CL**: productos sobre el umbral de exceso, de mayor a menor pallets
+  sobrantes (deja en el CD los días objetivo y el resto se envía). Descarga aparte con la hoja
+  `TRASLADO CD - CL` en el mismo formato de la hoja CD - CL del modelo.
 - **Forecast vs venta real**: los SKU donde el forecast más se aleja de lo vendido, en pallets
   a 5 días, para corregir la hoja REVISION.
 

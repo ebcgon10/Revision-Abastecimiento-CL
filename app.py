@@ -211,7 +211,8 @@ d1.download_button("⬇️ Descargar masivo priorizado + detalle (Excel)", r["ex
                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                    use_container_width=True)
 
-t1, t2, t3 = st.tabs(["📦 Masivo priorizado", "🔎 Cruce completo", "📉 Forecast vs venta real"])
+t1, t4, t2, t3 = st.tabs(["📦 Masivo priorizado", "🏗️ Sobra en CD → enviar a CL", "🔎 Cruce completo",
+                           "📉 Forecast vs venta real"])
 
 with t1:
     pr = res["por_prioridad"].reset_index()
@@ -222,6 +223,43 @@ with t1:
     filtro = st.multiselect("Prioridad", motor.PRIORIDADES, default=motor.PRIORIDADES[:2])
     vm = motor.vista(mas[mas["prioridad"].isin(filtro)], motor.COLS_VISTA_MASIVO)
     st.dataframe(pintar(vm, "PRIORIDAD"), hide_index=True, use_container_width=True, height=520)
+
+with t4:
+    sob = r["sobra"]
+    st.caption(f"Productos con más de {p['umbral_exceso']:g} días de cobertura con la venta real. "
+               f"Se deja en el CD lo necesario para {p['dias_objetivo']} días venta y el resto se envía al CL, "
+               "de mayor a menor cantidad de pallets. Cambia el umbral en Parámetros.")
+    if sob.empty:
+        st.success("No hay productos sobre el umbral de exceso. 🎉")
+    else:
+        k2 = st.columns(4)
+        tarjeta(k2[0], "Pallets a enviar al CL", miles(sob["pallets_sobrantes"].sum()), VERDE_OSC,
+                f"{len(sob)} SKU")
+        top = sob.head(10)["pallets_sobrantes"].sum()
+        tarjeta(k2[1], "Top 10 SKU", f"{miles(top)} pall.", AZUL,
+                f"{top / max(1, sob['pallets_sobrantes'].sum()):.0%} de la sobra")
+        sv = (sob["demanda_dia"] <= 0)
+        tarjeta(k2[2], "Sin venta en el período", f"{miles(sob.loc[sv, 'pallets_sobrantes'].sum())} pall.",
+                GRIS, f"{int(sv.sum())} SKU · revisar si son estacionales")
+        tarjeta(k2[3], "Cajas a enviar", miles(sob["cajas_a_enviar"].sum()), VERDE, "")
+        st.markdown("")
+        pas_s = sorted(x for x in sob["pasillo"].dropna().unique() if x)
+        f_ps = st.multiselect("Pasillo", pas_s, key="pas_sobra")
+        min_p = st.number_input("Mínimo de pallets sobrantes", 1, 50, 1, key="min_sobra")
+        vs = sob[sob["pallets_sobrantes"] >= min_p]
+        if f_ps:
+            vs = vs[vs["pasillo"].isin(f_ps)]
+        st.dataframe(motor.vista(vs, motor.COLS_VISTA_SOBRA).style.format(
+            {"PALLETS EN CD": "{:,.1f}", "DEMANDA DIA USADA": "{:,.1f}", "COBERTURA CD (DIAS)": "{:,.0f}",
+             "DIAS QUE QUEDAN EN CD": "{:,.1f}", "STOCK CD": "{:,.0f}", "STOCK CL": "{:,.0f}",
+             "CAJAS A ENVIAR": "{:,.0f}", "PALLETS SOBRANTES": "{:,.0f}",
+             "PALLETS A DEJAR (DIAS OBJETIVO)": "{:,.0f}", "CAJAS X PALLET": "{:,.0f}",
+             "FORECAST DIA (7 HRS)": "{:,.0f}", "EXCESO SEGUN MODELO (PALLETS)": "{:,.0f}"}),
+            hide_index=True, use_container_width=True, height=560)
+        st.download_button("⬇️ Descargar sobra en CD + traslado CD - CL (Excel)", r["excel_sobra"],
+                           f"Sobra_CD_a_CL_{hoy}.xlsx",
+                           "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                           use_container_width=True)
 
 with t2:
     acciones = [a for a in ["AGREGAR AL MASIVO", "SOBRA EN CD", "QUIEBRE (sin pallet en CL)",
