@@ -30,9 +30,29 @@ st.markdown("""<style>
 
 # ---------------------------------------------------------------- Drive (opcional)
 def secretos_drive():
+    """Credenciales de la cuenta de servicio desde los secrets. Acepta el JSON pegado como texto
+    (gcp_json = '''{...}''') o como tabla TOML ([gcp_json] / [gcp_service_account])."""
+    import json
+    cred = None
+    for clave in ("gcp_json", "gcp_service_account"):
+        try:
+            cred = st.secrets[clave]
+            break
+        except (KeyError, FileNotFoundError):
+            continue
+    if cred is None:
+        return None
+    if not isinstance(cred, str):
+        cred = json.dumps(dict(cred))
+    cred = cred.strip()
     try:
-        cred = st.secrets["gcp_json"]
-    except (KeyError, FileNotFoundError):
+        info = json.loads(cred)
+        if "client_email" not in info or "private_key" not in info:
+            raise ValueError("faltan client_email o private_key")
+    except Exception as e:  # noqa: BLE001
+        st.warning("El secret gcp_json no es un JSON válido de cuenta de servicio "
+                   f"({e}). Pega el contenido completo del archivo .json, desde la primera {{ "
+                   "hasta la última }, entre triples comillas. Mientras tanto, sube la venta a mano.")
         return None
     try:
         carpeta = st.secrets.get("drive_venta_folder_id", CARPETA_VENTA)
