@@ -151,15 +151,8 @@ def leer_modelo(contenido: bytes) -> dict:
         x = x[x["CODIGO SAP"] != ""]
         x["HOJA"] = h
         filas.append(x)
-    # plantilla de la hoja de traslado CD - CL (GRUPO, ORIGEN, DESTINO tal como los usa el modelo)
-    plantilla = {"GRUPO": 1, "ORIGEN": "COQUIMEXT", "DESTINO": "COQUIMBO"}
-    if "CD - CL" in hojas:
-        t = pd.read_excel(xls, hojas["CD - CL"], header=None, dtype=str, nrows=3)
-        if len(t) and str(t.iat[0, 0]).strip().upper() == "GRUPO":
-            t = t.iloc[1:]
-        if len(t) and t.shape[1] >= 3 and str(t.iat[0, 1]) not in ("nan", ""):
-            plantilla = {"GRUPO": int(_num(t.iloc[:1, 0]).iat[0]) or 1,
-                         "ORIGEN": str(t.iat[0, 1]).strip(), "DESTINO": str(t.iat[0, 2]).strip()}
+    # traslado CD -> CL: sale de COQUIMBO (CD) y va a COQUIMEXT (CL); el masivo es al revés.
+    plantilla = {"GRUPO": 1, "ORIGEN": "COQUIMBO", "DESTINO": "COQUIMEXT"}
     if not filas:
         raise ValueError("No encontré líneas en las hojas MASIVO GM / MASIVO CVP.")
     mas = pd.concat(filas, ignore_index=True)
