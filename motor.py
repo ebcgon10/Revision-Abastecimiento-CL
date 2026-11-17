@@ -44,22 +44,39 @@ def _num(s: pd.Series) -> pd.Series:
     return pd.to_numeric(txt, errors="coerce").fillna(0)
 
 
-def leer_tabla(contenido: bytes, nombre: str) -> pd.DataFrame:
-    """CSV (separador ; o ,) o Excel, columnas en minúsculas."""
+def leer_tabla(contenido: bytes, nombre: str, columnas=None) -> pd.DataFrame:
+    """CSV (separador ; o ,) o Excel, columnas en minúsculas.
+    columnas: si se indica, solo se cargan esas (ahorra memoria con archivos de venta grandes)."""
+    usar = (lambda c: str(c).strip().lower() in columnas) if columnas else None
     if nombre.lower().endswith(".csv"):
         primera = contenido[:2000].split(b"\n", 1)[0]
         sep = ";" if primera.count(b";") > primera.count(b",") else ","
         df = None
         for cod in ("utf-8-sig", "latin-1"):
             try:
-                df = pd.read_csv(io.BytesIO(contenido), sep=sep, dtype=str, encoding=cod)
+                df = pd.read_csv(io.BytesIO(contenido), sep=sep, dtype=str, encoding=cod, usecols=usar)
                 break
             except UnicodeDecodeError:
                 continue
     else:
-        df = pd.read_excel(io.BytesIO(contenido), dtype=str)
+        df = pd.read_excel(io.BytesIO(contenido), dtype=str, usecols=usar)
     df.columns = [str(c).strip().lower() for c in df.columns]
     return df
+
+
+def _fecha(txt: pd.Series) -> pd.Series:
+    """Fechas de SAP/Excel: prueba formatos fijos (rápido) y al final deja que pandas adivine."""
+    txt = txt.astype(str).str.strip().str.slice(0, 19)
+    out = pd.Series(pd.NaT, index=txt.index)
+    for fmt in ("%d.%m.%Y", "%d-%m-%Y", "%d/%m/%Y", "%Y-%m-%d", "%Y-%m-%d %H:%M:%S", "%Y%m%d"):
+        falta = out.isna()
+        if not falta.any():
+            break
+        out[falta] = pd.to_datetime(txt[falta], format=fmt, errors="coerce")
+    falta = out.isna()
+    if falta.any():
+        out[falta] = pd.to_datetime(txt[falta], dayfirst=True, errors="coerce")
+    return out
 
 
 # ------------------------------------------------------------------ modelo de abastecimiento
@@ -150,7 +167,8 @@ def leer_venta(archivos: list[tuple[str, bytes]]) -> pd.DataFrame:
     negativa = salida) o formato simple (FECHA, CODIGO, CAJAS)."""
     partes = []
     for nombre, contenido in archivos:
-        v = leer_tabla(contenido, nombre)
+        v = leer_tabla(contenido, nombre, columnas=set(COLS_VENTA_951) | {
+            "documento material", "fecha", "codigo", "cajas"})
         if all(c in v.columns for c in COLS_VENTA_951):
             cajas = -_num(v["cantidad"])
             fecha_txt, cod = v["fecha contabiliz."], v["material"]
@@ -160,10 +178,7 @@ def leer_venta(archivos: list[tuple[str, bytes]]) -> pd.DataFrame:
         else:
             raise ValueError(f"{nombre}: no reconozco el formato. Debe traer Fecha contabiliz., "
                              "Material y Cantidad (exporte 951) o FECHA, CODIGO y CAJAS.")
-        fecha_txt = fecha_txt.astype(str).str.strip()
-        fecha = pd.to_datetime(fecha_txt, format="ISO8601", errors="coerce")
-        sin = fecha.isna()
-        fecha[sin] = pd.to_datetime(fecha_txt[sin], dayfirst=True, errors="coerce")
+        fecha = _fecha(fecha_txt)
         d = pd.DataFrame({"fecha": fecha.dt.normalize(), "material": _cod(cod), "cajas": cajas})
         if "documento material" in v.columns:
             d["doc"] = v["documento material"].astype(str)

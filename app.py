@@ -133,8 +133,9 @@ with c2:
         if arch:
             arch = sorted(arch, key=lambda f: f["modifiedTime"], reverse=True)
             nombres = [f"{f['carpeta']}{f['name']}" for f in arch]
-            elegidos = st.multiselect("Archivos de venta en Drive", nombres, default=nombres[:2],
-                                      help="Por defecto los 2 más recientes (mes actual y anterior).")
+            elegidos = st.multiselect("Archivos de venta en Drive", nombres, default=nombres[:1],
+                                      help="Por defecto el más reciente. Si eliges varios que se traslapan, "
+                                           "las filas repetidas se cuentan una vez (pero usa más memoria).")
             ventas_drive = [f for f, n in zip(arch, nombres) if n in elegidos]
             if st.button("🔄 Actualizar lista de Drive"):
                 listar_drive.clear()
