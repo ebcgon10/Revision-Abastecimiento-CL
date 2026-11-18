@@ -415,7 +415,7 @@ NOMBRES = {
     "descripcion": "DESCRIPCION", "pasillo": "PASILLO", "PALLETS": "PALLETS MASIVO",
     "CANTIDAD CAJAS": "CAJAS MASIVO", "cajas_x_pallet": "CAJAS X PALLET", "stock_cd": "STOCK CD",
     "stock_cl": "STOCK CL", "transito": "TRANSITO", "forecast_dia": "FORECAST DIA (7 HRS)",
-    "revision_pallets": "REVISION MANUAL (PALLETS)", "venta_periodo": "VENTA PERIODO",
+    "revision_pallets": "PALLETS FIJOS HOJA REVISION", "venta_periodo": "VENTA PERIODO",
     "venta_dia_prom": "VENTA DIA PROM", "venta_dia_ult_semana": "VENTA DIA ULT. SEMANA",
     "demanda_dia": "DEMANDA DIA USADA", "pct_dias_con_venta": "% DIAS CON VENTA",
     "real_vs_forecast": "REAL / FORECAST", "cobertura_dias": "COBERTURA CD (DIAS)",

@@ -101,6 +101,9 @@ def pintar(df, columna):
             fmt[c] = "{:,.1f}"
     if "REAL / FORECAST" in df.columns:
         fmt["REAL / FORECAST"] = "{:.0%}"
+    if "PALLETS FIJOS HOJA REVISION" in df.columns:
+        fmt["PALLETS FIJOS HOJA REVISION"] = lambda x: "" if pd.isna(x) or x == 0 else (
+            "TODO" if x >= 999 else f"{x:,.0f}")
     return df.style.apply(f, axis=1).format(fmt, na_rep="")
 
 
@@ -280,22 +283,38 @@ with t3:
     st.caption("Productos donde el forecast del stock 7 hrs se aleja de la venta real. "
                "Son los que más pallets sin rotación (forecast alto) o quiebres (forecast bajo) generan; "
                "sirven para corregir la hoja REVISION.")
+    st.info("**PALLETS FIJOS HOJA REVISION**: pallets que alguien dejó fijos a mano en la hoja REVISION del "
+            "modelo. Cuando hay un valor, el modelo ignora el forecast y mantiene esa cantidad en el CD "
+            "(999 o 9999 = traer todo lo que haya en el CL). Vacío = el modelo usa el forecast. "
+            "Si un producto con valor fijo aparece a la izquierda, ese valor es el que está trayendo pallets de más.")
     f = cru[(cru["forecast_dia"] > 0) & (cru["descripcion"] != "NO ESTÁ EN EL MODELO")].copy()
     f["dif_cajas_dia"] = f["forecast_dia"] - f["demanda_dia"]
     f["dif_pallets_5d"] = f["dif_cajas_dia"] * p["dias_objetivo"] / f["cajas_x_pallet"]
     cols = ["sap", "descripcion", "pasillo", "forecast_dia", "demanda_dia", "real_vs_forecast",
             "dif_pallets_5d", "revision_pallets", "stock_cd", "cobertura_dias"]
     ren = {**motor.NOMBRES, "dif_pallets_5d": "DIF. PALLETS EN 5 DÍAS"}
+
+    def entero(x):
+        return "" if pd.isna(x) else f"{x:,.0f}".replace(",", ".")
+
+    def fijo(x):
+        if pd.isna(x) or x == 0:
+            return ""
+        return "TODO" if x >= 999 else f"{x:,.0f}"
+
+    def decimal(x):
+        return "" if pd.isna(x) else f"{x:,.1f}".replace(",", "X").replace(".", ",").replace("X", ".")
+
+    fmt3 = {"FORECAST DIA (7 HRS)": entero, "DEMANDA DIA USADA": entero, "STOCK CD": entero,
+            "PALLETS FIJOS HOJA REVISION": fijo, "DIF. PALLETS EN 5 DÍAS": decimal,
+            "COBERTURA CD (DIAS)": decimal,
+            "REAL / FORECAST": lambda x: "" if pd.isna(x) else f"{x:.0%}"}
     a, b = st.columns(2)
     with a:
         st.markdown("**Forecast sobre la venta real** (llegan pallets de más)")
         st.dataframe(f.sort_values("dif_pallets_5d", ascending=False).head(40)[cols].rename(columns=ren)
-                     .style.format({"REAL / FORECAST": "{:.0%}", "DIF. PALLETS EN 5 DÍAS": "{:.1f}",
-                                    "DEMANDA DIA USADA": "{:.1f}", "COBERTURA CD (DIAS)": "{:.1f}"}),
-                     hide_index=True, use_container_width=True, height=500)
+                     .style.format(fmt3), hide_index=True, use_container_width=True, height=500)
     with b:
         st.markdown("**Forecast bajo la venta real** (riesgo de quiebre)")
         st.dataframe(f.sort_values("dif_pallets_5d").head(40)[cols].rename(columns=ren)
-                     .style.format({"REAL / FORECAST": "{:.0%}", "DIF. PALLETS EN 5 DÍAS": "{:.1f}",
-                                    "DEMANDA DIA USADA": "{:.1f}", "COBERTURA CD (DIAS)": "{:.1f}"}),
-                     hide_index=True, use_container_width=True, height=500)
+                     .style.format(fmt3), hide_index=True, use_container_width=True, height=500)
