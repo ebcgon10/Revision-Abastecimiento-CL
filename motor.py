@@ -20,6 +20,7 @@ PARAMS = {
     "umbral_urgente": 2.0,     # cobertura (días) bajo la cual el producto es urgente
     "umbral_exceso": 15.0,     # cobertura (días) sobre la cual sobra stock en el CD
     "dias_sin_venta": [6],     # domingo (0 = lunes ... 6 = domingo)
+    "pallets_vuelta": 28,      # pallets por camión (vuelta) para numerar la lista de carga
 }
 
 PRIORIDADES = ["1-URGENTE", "2-NORMAL", "3-POSTERGAR", "4-NO TRAER"]
@@ -151,6 +152,45 @@ def leer_modelo(contenido: bytes) -> dict:
         x = x[x["CODIGO SAP"] != ""]
         x["HOJA"] = h
         filas.append(x)
+    # pallets (LPN) que el modelo eligió en el CL, con sus fechas: hojas Vida Util GM / CVP
+    lp = []
+    for h, hoja_mas in (("VIDA UTIL GM", "MASIVO GM"), ("VIDA UTIL CVP", "MASIVO CVP")):
+        if h not in hojas:
+            continue
+        x = pd.read_excel(xls, hojas[h], dtype=str)
+        x.columns = [str(c).strip().upper() for c in x.columns]
+        col = {c: c for c in x.columns}
+        def buscar(*claves):
+            for c in x.columns:
+                if all(k in c for k in claves):
+                    return c
+            return None
+        c_sap, c_lpn = buscar("SAP"), buscar("LPN")
+        if not c_sap or not c_lpn:
+            continue
+        c_pos, c_vu = buscar("POSICION"), buscar("VIDA")
+        c_el, c_ve = buscar("ELABORA"), buscar("VENCIM")
+        d = pd.DataFrame({"sap": _cod(x[c_sap]), "lpn": x[c_lpn].astype(str).str.strip(),
+                          "posicion": x[c_pos].fillna("") if c_pos else "",
+                          "vida_util": x[c_vu] if c_vu else "",
+                          "fecha_elab_txt": x[c_el] if c_el else "",
+                          "fecha_venc_txt": x[c_ve] if c_ve else ""})
+        d["hoja"] = hoja_mas
+        lp.append(d)
+    lpns = pd.concat(lp, ignore_index=True) if lp else pd.DataFrame(
+        columns=["sap", "lpn", "posicion", "vida_util", "fecha_elab_txt", "fecha_venc_txt", "hoja"])
+    for c in ("elab", "venc"):
+        t = lpns[f"fecha_{c}_txt"].astype(str).str.strip()
+        f = pd.to_datetime(t.str.slice(0, 10), format="%Y-%m-%d", errors="coerce")
+        falta = f.isna()
+        f[falta] = pd.to_datetime(t[falta], dayfirst=True, errors="coerce")
+        lpns[f"fecha_{c}"] = f
+        # texto para mostrar: dd-mm-aaaa, o el valor original si viene raro (ej. año 1448)
+        lpns[f"fecha_{c}_txt"] = np.where(f.notna(), f.dt.strftime("%d-%m-%Y"),
+                                          t.replace({"nan": "", "None": ""}).str.slice(0, 10))
+    vu = pd.to_numeric(lpns["vida_util"].astype(str).str.replace("%", "").str.replace(",", "."), errors="coerce")
+    lpns["vida_util"] = np.where(vu > 1.5, vu / 100, vu)
+
     # traslado CD -> CL: sale de COQUIMBO (CD) y va a COQUIMEXT (CL); el masivo es al revés.
     plantilla = {"GRUPO": 1, "ORIGEN": "COQUIMBO", "DESTINO": "COQUIMEXT"}
     if not filas:
@@ -160,7 +200,7 @@ def leer_modelo(contenido: bytes) -> dict:
     mas["PALLETS"] = _num(mas["PALLETS"]).astype(int)
     mas["GRUPO"] = _num(mas["GRUPO"]).astype(int)
     mas["FECHA"] = _cod(mas["FECHA"])
-    return {"modelo": m, "masivo": mas, "plantilla_cd_cl": plantilla}
+    return {"modelo": m, "masivo": mas, "plantilla_cd_cl": plantilla, "lpns": lpns}
 
 
 # ------------------------------------------------------------------ venta real
@@ -351,6 +391,47 @@ def resumen(mas: pd.DataFrame, cruce: pd.DataFrame) -> dict:
     return r
 
 
+# ------------------------------------------------------------------ lista de pallets a sacar del CL
+def lista_pallets(listo: pd.DataFrame, mas: pd.DataFrame, lpns: pd.DataFrame, pallets_vuelta: int) -> pd.DataFrame:
+    """Un renglón por pallet que viaja, en orden de prioridad, con el LPN y las fechas del CL.
+    Para cada producto se toman primero los LPN que vencen antes (FEFO). Numera las vueltas."""
+    desc = mas.drop_duplicates("CODIGO SAP").set_index("CODIGO SAP")["descripcion"]
+    pool = {}
+    if len(lpns):
+        orden = lpns.sort_values(["fecha_venc", "fecha_elab"], na_position="last")
+        for (h, sap), g in orden.groupby(["hoja", "sap"], sort=False):
+            pool[(h, sap)] = g.to_dict("records")
+    filas = []
+    for _, r in listo.iterrows():
+        n = int(r["PALLETS"])
+        hoja = r["HOJA ORIGEN"]
+        disp = pool.get((hoja, r["CODIGO SAP"]), [])
+        for i in range(n):
+            base = {"PRIORIDAD": r["PRIORIDAD"], "HOJA ORIGEN": hoja, "CODIGO SAP": r["CODIGO SAP"],
+                    "DESCRIPCION": desc.get(r["CODIGO SAP"], ""), "PASILLO ACTUAL": r["PASILLO ACTUAL"]}
+            if disp:
+                l = disp.pop(0)
+                base.update({"LPN": l["lpn"], "POSICION CL": l["posicion"],
+                             "FECHA ELABORACION": l["fecha_elab_txt"], "FECHA VENCIMIENTO": l["fecha_venc_txt"],
+                             "% VIDA UTIL": l["vida_util"]})
+            else:
+                nota = ("EN TRÁNSITO" if "TRANSITO" in str(hoja) else
+                        "SIN LPN EN EL MODELO: elegir en CL por FEFO")
+                base.update({"LPN": nota, "POSICION CL": "", "FECHA ELABORACION": "",
+                             "FECHA VENCIMIENTO": "", "% VIDA UTIL": np.nan})
+            filas.append(base)
+    out = pd.DataFrame(filas, columns=["PRIORIDAD", "HOJA ORIGEN", "CODIGO SAP", "DESCRIPCION", "PASILLO ACTUAL",
+                                       "LPN", "POSICION CL", "FECHA ELABORACION", "FECHA VENCIMIENTO", "% VIDA UTIL"])
+    anio = pd.to_numeric(out["FECHA ELABORACION"].astype(str).str[-4:], errors="coerce")
+    out["ALERTA"] = np.select(
+        [anio < 2000, out["% VIDA UTIL"] < 0.2],
+        ["Fecha elaboración inválida en WMS: revisar el pallet", "Vida útil bajo 20%: confirmar antes de enviar"], "")
+    pv = max(1, int(pallets_vuelta))
+    out.insert(0, "N°", (np.arange(len(out)) % pv) + 1)
+    out.insert(0, "VUELTA", (np.arange(len(out)) // pv) + 1)
+    return out
+
+
 # ------------------------------------------------------------------ sobra en CD -> CL
 def sobra_cd(cruce: pd.DataFrame, p: dict) -> pd.DataFrame:
     """Productos con stock de más en el CD, de mayor a menor pallets sobrantes."""
@@ -442,7 +523,7 @@ def vista(df: pd.DataFrame, cols: list[str]) -> pd.DataFrame:
     return df[[c for c in cols if c in df.columns]].rename(columns=NOMBRES)
 
 
-def a_excel(listo, mas, cruce, res, info, p, sobra=None, traslado=None) -> bytes:
+def a_excel(listo, mas, cruce, res, info, p, sobra=None, traslado=None, pallets=None) -> bytes:
     """Excel con el masivo priorizado listo para cargar, el detalle y el cruce completo."""
     from openpyxl.styles import Alignment, Font, PatternFill
     from openpyxl.utils import get_column_letter
@@ -455,6 +536,7 @@ def a_excel(listo, mas, cruce, res, info, p, sobra=None, traslado=None) -> bytes
     salida = io.BytesIO()
     hojas = {
         "MASIVO PRIORIZADO": listo,
+        **({"PALLETS A SACAR DEL CL": pallets} if pallets is not None else {}),
         "DETALLE MASIVO": vista(mas, COLS_VISTA_MASIVO),
         "CRUCE COMPLETO": vista(cruce[cruce["accion"] != "-"], COLS_VISTA_CRUCE),
     }
@@ -503,7 +585,8 @@ def a_excel(listo, mas, cruce, res, info, p, sobra=None, traslado=None) -> bytes
                 for c in fila:
                     c.font = Font(name="Arial")
                     if isinstance(c.value, float):
-                        c.number_format = "0%" if ws.cell(hdr_row, c.column).value == "REAL / FORECAST" else "#,##0.0"
+                        c.number_format = ("0%" if ws.cell(hdr_row, c.column).value in ("REAL / FORECAST", "% VIDA UTIL")
+                                           else "#,##0.0")
                     if isinstance(c.value, str) and c.value in colores:
                         col = colores[c.value]
                         c.fill = PatternFill("solid", fgColor=col)
@@ -515,6 +598,46 @@ def a_excel(listo, mas, cruce, res, info, p, sobra=None, traslado=None) -> bytes
                     ws.column_dimensions[c.column_letter].width = 26
                 if c.value == "OBSERVACION":
                     ws.column_dimensions[c.column_letter].width = 50
+    return salida.getvalue()
+
+
+def a_excel_pallets(pal: pd.DataFrame, info) -> bytes:
+    """Lista de carga imprimible: una hoja por vuelta, un renglón por pallet con su fecha."""
+    from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+    from openpyxl.worksheet.page import PageMargins
+    salida = io.BytesIO()
+    fino = Side(style="thin", color="000000")
+    borde = Border(left=fino, right=fino, top=fino, bottom=fino)
+    cols = ["N°", "CODIGO SAP", "DESCRIPCION", "FECHA ELABORACION", "FECHA VENCIMIENTO", "LPN", "PRIORIDAD", "ALERTA"]
+    anchos = [5, 13, 38, 16, 16, 24, 13, 30]
+    with pd.ExcelWriter(salida, engine="openpyxl") as w:
+        vueltas = sorted(pal["VUELTA"].unique()) or [1]
+        for v in vueltas:
+            d = pal[pal["VUELTA"] == v][cols]
+            nombre = f"VUELTA {v}"
+            d.to_excel(w, sheet_name=nombre, index=False, startrow=1)
+            ws = w.book[nombre]
+            ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=len(cols))
+            ws["A1"] = f"{nombre} · {len(d)} pallets · CL → CD"
+            ws["A1"].font = Font(name="Arial", bold=True, size=13)
+            ws["A1"].alignment = Alignment(horizontal="center")
+            for c in ws[2]:
+                c.font = Font(name="Arial", bold=True, color="FFFFFF")
+                c.fill = PatternFill("solid", fgColor="205C40")
+                c.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+                c.border = borde
+            for fila in ws.iter_rows(min_row=3, max_row=ws.max_row):
+                for c in fila:
+                    c.font = Font(name="Arial", size=11)
+                    c.border = borde
+            for i, a in enumerate(anchos):
+                ws.column_dimensions[chr(65 + i)].width = a
+            ws.page_setup.orientation = "portrait"
+            ws.page_setup.fitToWidth = 1
+            ws.sheet_properties.pageSetUpPr.fitToPage = True
+            ws.page_setup.fitToHeight = 0
+            ws.page_margins = PageMargins(left=0.4, right=0.4, top=0.5, bottom=0.5)
+            ws.print_title_rows = "2:2"
     return salida.getvalue()
 
 
@@ -567,7 +690,9 @@ def procesar(modelo_bytes: bytes, ventas: list[tuple[str, bytes]], p: dict | Non
     listo = masivo_listo(mas, cru, fecha)
     sob = sobra_cd(cru, p)
     tras = traslado_cd_cl(sob, m["plantilla_cd_cl"], fecha)
+    pal = lista_pallets(listo, mas, m["lpns"], p["pallets_vuelta"])
     return {"masivo": mas, "cruce": cru, "resumen": res, "info": info, "listo": listo, "params": p,
-            "sobra": sob, "traslado": tras,
-            "excel": a_excel(listo, mas, cru, res, info, p, sob, tras),
+            "sobra": sob, "traslado": tras, "pallets": pal,
+            "excel": a_excel(listo, mas, cru, res, info, p, sob, tras, pal),
+            "excel_pallets": a_excel_pallets(pal, info),
             "excel_sobra": a_excel_sobra(sob, tras, info, p)}

@@ -131,6 +131,8 @@ with st.sidebar:
                                           p["umbral_urgente"], 0.5)
     p["umbral_exceso"] = st.number_input("Sobra en CD sobre (días de cobertura)", 6.0, 60.0,
                                          p["umbral_exceso"], 1.0)
+    p["pallets_vuelta"] = st.number_input("Pallets por vuelta (camión)", 1, 60, p["pallets_vuelta"],
+                                          help="Para numerar la lista de carga por vuelta.")
     st.caption("Domingo no se cuenta como día de venta.")
 
 st.markdown("---")
@@ -226,6 +228,24 @@ with t1:
     filtro = st.multiselect("Prioridad", motor.PRIORIDADES, default=motor.PRIORIDADES[:2])
     vm = motor.vista(mas[mas["prioridad"].isin(filtro)], motor.COLS_VISTA_MASIVO)
     st.dataframe(pintar(vm, "PRIORIDAD"), hide_index=True, use_container_width=True, height=520)
+
+    st.markdown("#### Pallets a sacar del CL, con fechas")
+    pal = r["pallets"]
+    st.caption("Un renglón por pallet que viaja, en orden de carga. El LPN y las fechas vienen de las hojas "
+               "Vida Util GM / CVP del modelo; de cada producto se sacan primero los pallets que vencen antes "
+               f"(FEFO). Numerado en vueltas de {p['pallets_vuelta']} pallets.")
+    n_alerta = int((pal["ALERTA"] != "").sum())
+    if n_alerta:
+        st.warning(f"{n_alerta} pallet(s) con alerta de fecha o vida útil: revísalos antes de cargar.")
+    vueltas = sorted(pal["VUELTA"].unique())
+    vsel = st.multiselect("Vuelta", vueltas, default=vueltas[:1], key="vuelta")
+    vp = pal[pal["VUELTA"].isin(vsel)] if vsel else pal
+    st.dataframe(pintar(vp, "PRIORIDAD").format({"% VIDA UTIL": "{:.0%}"}, na_rep=""),
+                 hide_index=True, use_container_width=True, height=480)
+    st.download_button("🖨️ Descargar lista de carga por vuelta (Excel imprimible)", r["excel_pallets"],
+                       f"Lista_carga_CL_{hoy}.xlsx",
+                       "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                       use_container_width=True)
 
 with t4:
     sob = r["sobra"]

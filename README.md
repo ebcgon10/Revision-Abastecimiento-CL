@@ -31,6 +31,9 @@ reporte stock 7 hrs.
   - `SOBRA EN CD`: cobertura sobre 15 días; muestra cuántos pallets están de más (candidatos a
     devolver o a no reponer para liberar strech).
   - `QUIEBRE (sin pallet en CL)`, `BAJO (viene en masivo)`, `VENDE Y NO ESTÁ EN EL MODELO`, `OK`.
+- **Pallets a sacar del CL, con fechas**: un renglón por pallet que viaja, con LPN, fecha de
+  elaboración y vencimiento (hojas Vida Util GM / CVP del modelo), FEFO por producto y numerado
+  por vuelta. Descarga imprimible con una hoja por vuelta.
 - **Sobra en CD → enviar a CL**: productos sobre el umbral de exceso, de mayor a menor pallets
   sobrantes (deja en el CD los días objetivo y el resto se envía). Descarga aparte con la hoja
   `TRASLADO CD - CL` en el mismo formato de la hoja CD - CL del modelo.
